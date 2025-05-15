@@ -8,7 +8,7 @@ import random
 import math
 from shapely.geometry import box
 from collections import defaultdict
-
+import matplotlib.cm as cm
 # === PARAMETERS ===
 NUM_MACROS = 10
 NUM_STANDARD_CELLS = 10000
@@ -20,7 +20,7 @@ GRID_DIM = CHIP_SIZE // GRID_SIZE
 NUM_CLUSTER_CONNECTIONS = 3
 
 # === OUTPUT DIRECTORY ===
-output_dir = "./Algo4"
+output_dir = "./Algo5(Dual O)"
 os.makedirs(output_dir, exist_ok=True)
 
 np.random.seed(42)
@@ -96,22 +96,41 @@ def is_overlapping(new_box, existing_boxes):
 def is_within_chip(b: box, chip_size: int) -> bool:
     minx, miny, maxx, maxy = b.bounds
     return 0 <= minx and maxx <= chip_size and 0 <= miny and maxy <= chip_size
-
 def spiral_search(cx, cy, w, h, chip_size, step_frac=0.01, angle_steps=24):
+    """
+    Spiral search for macro placement with orientation consideration.
+    Tries both (w, h) and (h, w) and picks the one that stays more compactly inside the chip.
+    Returns (position, box, chosen_w, chosen_h) or None if failed.
+    """
     max_radius = chip_size / 2
     step_r = chip_size * step_frac
     step_theta = 360 // angle_steps
     r = 0.0
+
     while r <= max_radius:
         for angle_deg in range(0, 360, step_theta):
             theta = math.radians(angle_deg)
             dx, dy = r * math.cos(theta), r * math.sin(theta)
             x, y = cx + dx, cy + dy
-            b = box(x - w/2, y - h/2, x + w/2, y + h/2)
-            if is_within_chip(b, chip_size) and not is_overlapping(b, macro_boxes):
-                return np.array([x, y]), b
+
+            candidates = [(w, h), (h, w)]
+            best = None
+            min_extent = float('inf')
+
+            for test_w, test_h in candidates:
+                b = box(x - test_w / 2, y - test_h / 2, x + test_w / 2, y + test_h / 2)
+                if is_within_chip(b, chip_size) and not is_overlapping(b, macro_boxes):
+                    extent = max(b.bounds[2], b.bounds[3])  # farthest x or y
+                    if extent < min_extent:
+                        best = (np.array([x, y]), b, test_w, test_h)
+                        min_extent = extent
+
+            if best:
+                return best  # (position, box, chosen_w, chosen_h)
+
         r += step_r
-    return None, None
+
+    return None, None, None, None  # Failed
 
 macro_positions = {}
 macro_boxes = []
@@ -123,13 +142,16 @@ for macro in sorted_macros:
     ys = [cluster_positions[cid][1] for cid in related_clusters]
     cx, cy = np.mean(xs), np.mean(ys)
     w, h = macro_sizes[macro]
-    pos, b = spiral_search(cx, cy, w, h, CHIP_SIZE)
+    pos, b, chosen_w, chosen_h = spiral_search(cx, cy, w, h, CHIP_SIZE)
     if pos is not None:
         macro_positions[macro] = pos
         macro_boxes.append(b)
+        macro_sizes[macro] = (chosen_w, chosen_h)  # update size in case rotated
     else:
-        print(f"⚠️ Could not legally place macro {macro}. Assigning to (0,0)")
+        print(f" Could not legally place macro {macro}. Assigning to (0,0)")
         macro_positions[macro] = np.array([0, 0])
+        macro_sizes[macro] = (w, h)  # keep original size
+
 
 # === VISUALIZATIONS ===
 
@@ -172,3 +194,65 @@ for macro in macros:
     ax.set_title(f"{macro} and Connected Clusters")
     ax.grid(True)
     plt.savefig(f"{output_dir}/{macro}_connectivity_view.png")
+
+
+# Macro Density Heatmap
+macro_density = np.zeros((GRID_DIM, GRID_DIM))
+for macro, (x, y) in macro_positions.items():
+    x_idx = min(int(x // GRID_SIZE), GRID_DIM - 1)
+    y_idx = min(int(y // GRID_SIZE), GRID_DIM - 1)
+    macro_density[y_idx, x_idx] += 1
+plt.figure(figsize=(6, 5))
+sns.heatmap(pd.DataFrame(macro_density), cmap='Reds', cbar=True, square=True)
+plt.title("Macro Density Heatmap")
+plt.xlabel("X Grid")
+plt.ylabel("Y Grid")
+macro_density_path = f"{output_dir}/macro_density_heatmap.png"
+plt.savefig(macro_density_path)
+
+# Cluster Density Heatmap
+cluster_density = np.zeros((GRID_DIM, GRID_DIM))
+for _, (x, y) in cluster_positions.items():
+    x_idx = min(int(x // GRID_SIZE), GRID_DIM - 1)
+    y_idx = min(int(y // GRID_SIZE), GRID_DIM - 1)
+    cluster_density[y_idx, x_idx] += 1
+plt.figure(figsize=(6, 5))
+sns.heatmap(pd.DataFrame(cluster_density), cmap='Blues', cbar=True, square=True)
+plt.title("Cluster Density Heatmap")
+plt.xlabel("X Grid")
+plt.ylabel("Y Grid")
+cluster_density_path = f"{output_dir}/cluster_density_heatmap.png"
+plt.savefig(cluster_density_path)
+
+# Cluster Map Colored by Macro Families
+macro_colors = {}
+macro_list = list(macro_to_clusters.keys())
+cmap = cm.get_cmap('tab10', len(macro_list))
+for i, m in enumerate(macro_list):
+    macro_colors[m] = cmap(i)
+
+fig, ax = plt.subplots(figsize=(10, 10))
+for macro, clusters in macro_to_clusters.items():
+    color = macro_colors[macro]
+    for cid in clusters:
+        x, y = cluster_positions[cid]
+        ax.plot(x, y, 'o', color=color, markersize=4)
+        ax.text(x + 0.3, y + 0.3, f'{cid}', fontsize=5)
+
+for macro in macros:
+    x, y = macro_positions[macro]
+    w, h = macro_sizes[macro]
+    ax.plot(x, y, 's', color=macro_colors[macro], markersize=8)
+    rect = plt.Rectangle((x - w/2, y - h/2), w, h, linewidth=1.5,
+                         edgecolor=macro_colors[macro], facecolor='none')
+    ax.add_patch(rect)
+    ax.text(x + 0.5, y + 0.5, macro, fontsize=7, fontweight='bold')
+
+ax.set_xlim(0, CHIP_SIZE)
+ax.set_ylim(0, CHIP_SIZE)
+ax.set_title("Cluster Map Colored by Macro Families")
+ax.grid(True)
+cluster_macro_colormap_path = f"{output_dir}/cluster_macro_family_colormap.png"
+plt.savefig(cluster_macro_colormap_path)
+
+macro_density_path, cluster_density_path, cluster_macro_colormap_path
