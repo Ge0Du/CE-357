@@ -331,7 +331,7 @@ target_link_libraries(openroad
   dft
   mpl
   par
-  MacroPlacer
+  openroad_macroplacer
   ${ABC_LIBRARY}
   ${TCL_LIBRARY}
   ${CMAKE_THREAD_LIBS_INIT}
